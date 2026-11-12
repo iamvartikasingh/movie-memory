@@ -12,7 +12,11 @@ function signInErrorMessage(error: string | string[] | undefined) {
     : "Sign-in didn't work. Please try again.";
 }
 
-export default async function Home({ searchParams }: PageProps<"/">) {
+export default async function Home({
+  searchParams,
+}: {
+  searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
+}) {
   // Signed-in users never see the landing page. This is also where Google
   // sign-in lands, so it's the single place that routes first-time users to
   // onboarding and returning users to the dashboard.
