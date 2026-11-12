@@ -194,8 +194,12 @@ The interesting problems in this app are on the backend: a time-based cache, con
 
 ## AI usage
 
-- I used Claude Code (Anthropic's coding agent) as a pair programmer throughout. It scaffolded the project and wrote first drafts of the implementation, the tests and this README.
-- **Design:** I used it to compare the four burst-protection approaches before choosing the advisory lock, and to work through the isolation-level, lock-timeout and connection-pooling details.
-- **Iterating on the product:** I reviewed the app in the browser and directed changes, and Claude implemented them: the cinematic redesign, the poster and backdrop, changing the movie, the "New fact in 42s" countdown, and the film picker for telling same-name films apart.
-- **Debugging:** it traced the "server configuration" error after a cancelled Google sign-in to Auth.js rejecting Google's error response from the server logs, and diagnosed an OpenAI key that had no model access.
-- **Verification:** it ran the test suite, lint, type checks and a production build, and drove the real app in Chrome with Playwright scripts and screenshots, using a seeded database session in place of Google sign-in. It also confirmed the concurrency test is meaningful by removing the lock and showing the test fail.
+- **How I worked:** I built this with Claude Code (Anthropic's coding agent) as a pair programmer. It wrote most of the code, the tests and the first draft of this README. I directed the work, tested the app myself, and decided what to change.
+- **Design choices:** I chose Variant A. Claude compared the spec's four burst-protection approaches and proposed the Postgres advisory lock; the reasoning (isolation level, lock timeout, connection pooling) is in the tradeoffs above.
+- **Problems I found by using the app**, which shaped the later work:
+  - Cancelling Google sign-in showed a bare "Server error" page. The cause was Auth.js rejecting Google's error response; a cancelled sign-in now returns to the landing page with a message.
+  - "Get another fact" looked broken inside the 60-second window, because it returned the same fact. The button now counts down until a new fact is possible.
+  - Films that share a name, such as two *Ramayana* films or *Drishyam* and its Hindi remake, couldn't be told apart. That led to the film picker.
+  - I set the visual direction (a dark, cinematic theme with the movie's poster and backdrop) and asked for a way to change the movie.
+- **Verification:** Claude ran the tests, lint, type checks and a production build, and drove the real app in Chrome with Playwright, using a seeded session in place of Google sign-in. It confirmed the concurrency test is meaningful by removing the lock and showing the test then fails.
+- **My review:** I checked every change by using the app myself, signing in with my own Google account and trying edge cases such as cancelling sign-in and requesting facts repeatedly, and asked for fixes whenever something was wrong or confusing.
