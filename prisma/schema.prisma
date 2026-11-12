@@ -1,0 +1,82 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// User, Account and Session follow the shape @auth/prisma-adapter expects.
+// VerificationToken is omitted because it is only used by email sign-in.
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String?   @unique
+  emailVerified DateTime?
+  image         String?
+  // One favorite per user, so it lives on User rather than in its own table.
+  // NULL means onboarding hasn't been completed yet. For a film picked from
+  // the search list this is its Wikipedia article title, which is unique
+  // ("Drishyam" vs "Drishyam (2015 film)"), so films that share a name get
+  // separate facts. A title typed without picking is stored as typed.
+  favoriteMovie            String?  @db.VarChar(100)
+  // Set only for a picked film, after verifying it against Wikipedia.
+  favoriteMovieWikipediaId Int?
+  favoriteMovieDescription String?  @db.VarChar(200)
+  favoriteMoviePosterUrl   String?
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  accounts Account[]
+  sessions Session[]
+  facts    MovieFact[]
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// Append-only history of generated facts. Each row records the movie title it
+// was generated for, so the cache key is (userId, movie) and old facts stay
+// correct if the favorite ever changes.
+model MovieFact {
+  id        String   @id @default(cuid())
+  userId    String
+  movie     String   @db.VarChar(100)
+  content   String   @db.Text
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Serves "latest fact for this user + movie" as a single index lookup.
+  @@index([userId, movie, createdAt(sort: Desc)])
+}
