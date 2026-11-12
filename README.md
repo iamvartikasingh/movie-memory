@@ -194,12 +194,13 @@ The interesting problems in this app are on the backend: a time-based cache, con
 
 ## AI usage
 
-- **How I worked:** I built this with Claude Code (Anthropic's coding agent) as a pair programmer. It wrote most of the code, the tests and the first draft of this README. I directed the work, tested the app myself, and decided what to change.
+- **How I worked:** My goal was a polished, low-friction experience on top of a correct backend, and I drew on my frontend, backend and infrastructure knowledge to get there. I built it with Claude Code (Anthropic's coding agent) as a pair programmer: it wrote most of the code, the tests and the first draft of this README, while I set the direction, tested the app myself and decided what to change.
 - **Design choices:** I chose Variant A. Claude compared the spec's four burst-protection approaches and proposed the Postgres advisory lock; the reasoning (isolation level, lock timeout, connection pooling) is in the tradeoffs above.
-- **Problems I found by using the app**, which shaped the later work:
+- **Removing friction:** most of the work beyond the spec came from using the app and fixing what got in the way:
   - Cancelling Google sign-in showed a bare "Server error" page. The cause was Auth.js rejecting Google's error response; a cancelled sign-in now returns to the landing page with a message.
   - "Get another fact" looked broken inside the 60-second window, because it returned the same fact. The button now counts down until a new fact is possible.
   - Films that share a name, such as two *Ramayana* films or *Drishyam* and its Hindi remake, couldn't be told apart. That led to the film picker.
   - I set the visual direction (a dark, cinematic theme with the movie's poster and backdrop) and asked for a way to change the movie.
+- **Infrastructure:** I set up the Google OAuth client and the OpenAI project, and weighed hosting options for a live demo (Vercel with Neon Postgres versus Render).
 - **Verification:** Claude ran the tests, lint, type checks and a production build, and drove the real app in Chrome with Playwright, using a seeded session in place of Google sign-in. It confirmed the concurrency test is meaningful by removing the lock and showing the test then fails.
 - **My review:** I checked every change by using the app myself, signing in with my own Google account and trying edge cases such as cancelling sign-in and requesting facts repeatedly, and asked for fixes whenever something was wrong or confusing.
