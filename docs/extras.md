@@ -40,7 +40,7 @@ The dashboard hero shows the movie's poster beside its title, with artwork behin
 
 "Change movie" on the dashboard turns the title into the same picker, with Save and Cancel (or Esc). The `changeFavoriteMovie` server action re-checks the session, reuses the onboarding validation, and only updates the signed-in user's row; `refresh()` then re-renders the dashboard. Onboarding itself stays first-time only.
 
-Facts are keyed by movie, so a new title starts with no cached fact and switching back finds the old ones. The catch: switching titles repeatedly can trigger one generation per switch, which a per-user generation cap would close (see the README's improvements).
+Facts are keyed by movie, so a new title starts with no cached fact and switching back finds the old ones. Switching titles repeatedly can't run up OpenAI usage, because the fact service caps each user at 10 new facts per 10 minutes across all movies.
 
 ## Possible next steps
 

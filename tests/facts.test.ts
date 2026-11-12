@@ -5,8 +5,11 @@ import {
   FactUnavailableError,
   getFactForUser,
   isWithinCacheWindow,
+  GENERATION_LIMIT,
+  GENERATION_LIMIT_WINDOW_MS,
+  GenerationLimitError,
   NoFavoriteMovieError,
-  secondsUntilNextFact,
+  secondsUntil,
 } from "@/lib/facts";
 import { createFact, createUser, resetDatabase } from "./helpers";
 
@@ -38,17 +41,19 @@ describe("isWithinCacheWindow", () => {
   });
 });
 
-describe("secondsUntilNextFact", () => {
-  it("counts down whole seconds, rounding up while the fact is still cached", () => {
-    expect(secondsUntilNextFact(NOW, NOW)).toBe(60);
-    expect(secondsUntilNextFact(msAgo(500), NOW)).toBe(60);
-    expect(secondsUntilNextFact(secondsAgo(18), NOW)).toBe(42);
-    expect(secondsUntilNextFact(msAgo(FACT_CACHE_WINDOW_MS - 1), NOW)).toBe(1);
+describe("secondsUntil", () => {
+  const inMs = (ms: number) => new Date(NOW.getTime() + ms);
+
+  it("counts down whole seconds, rounding up", () => {
+    expect(secondsUntil(inMs(60_000), NOW)).toBe(60);
+    expect(secondsUntil(inMs(59_500), NOW)).toBe(60);
+    expect(secondsUntil(inMs(42_000), NOW)).toBe(42);
+    expect(secondsUntil(inMs(1), NOW)).toBe(1);
   });
 
-  it("reaches 0 exactly when the fact leaves the cache window", () => {
-    expect(secondsUntilNextFact(msAgo(FACT_CACHE_WINDOW_MS), NOW)).toBe(0);
-    expect(secondsUntilNextFact(secondsAgo(600), NOW)).toBe(0);
+  it("is 0 once the time has come, never negative", () => {
+    expect(secondsUntil(NOW, NOW)).toBe(0);
+    expect(secondsUntil(inMs(-600_000), NOW)).toBe(0);
   });
 });
 
@@ -63,6 +68,8 @@ describe("getFactForUser: 60-second cache", () => {
     expect(result.source).toBe("cache");
     expect(result.fact.id).toBe(cached.id);
     expect(deps.generateFact).not.toHaveBeenCalled();
+    // A new fact becomes possible when this one leaves the window, 1s from now.
+    expect(result.nextFactAt).toEqual(new Date(NOW.getTime() + 1_000));
   });
 
   it("generates and stores a new fact once the latest is 60 seconds old", async () => {
@@ -170,6 +177,52 @@ describe("getFactForUser: OpenAI failures", () => {
     await expect(getFactForUser(user.id, fakeDeps(failingOpenAI))).rejects.toBeInstanceOf(
       FactUnavailableError,
     );
+  });
+});
+
+describe("getFactForUser: generation limit", () => {
+  // The user's last GENERATION_LIMIT facts, for other movies, spread over the
+  // window; the oldest is `oldestAgoMs` old.
+  async function fillLimit(userId: string, oldestAgoMs: number) {
+    for (let i = 0; i < GENERATION_LIMIT; i++) {
+      await createFact(userId, `Other movie ${i}`, msAgo(oldestAgoMs - i * 1_000));
+    }
+  }
+
+  it("serves the latest fact, without generating, once the user reaches the limit", async () => {
+    const user = await createUser("Inception");
+    const latest = await createFact(user.id, "Inception", secondsAgo(700));
+    await fillLimit(user.id, 9 * 60_000);
+    const deps = fakeDeps();
+
+    const result = await getFactForUser(user.id, deps);
+
+    expect(result.source).toBe("limited");
+    expect(result.fact.id).toBe(latest.id);
+    expect(deps.generateFact).not.toHaveBeenCalled();
+    // A slot frees up when the oldest counted fact (9 minutes old) leaves the 10-minute window.
+    expect(result.nextFactAt).toEqual(new Date(NOW.getTime() + 60_000));
+  });
+
+  it("counts facts for every movie, so switching movies can't get around it", async () => {
+    const user = await createUser("A movie with no facts yet");
+    await fillLimit(user.id, 9 * 60_000);
+
+    const error = await getFactForUser(user.id, fakeDeps()).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(GenerationLimitError);
+    expect((error as GenerationLimitError).retryAt).toEqual(new Date(NOW.getTime() + 60_000));
+  });
+
+  it("stops counting facts once they're 10 minutes old", async () => {
+    const user = await createUser("Inception");
+    await fillLimit(user.id, GENERATION_LIMIT_WINDOW_MS + (GENERATION_LIMIT - 1) * 1_000);
+    const deps = fakeDeps();
+
+    const result = await getFactForUser(user.id, deps);
+
+    expect(result.source).toBe("generated");
+    expect(deps.generateFact).toHaveBeenCalledOnce();
   });
 });
 

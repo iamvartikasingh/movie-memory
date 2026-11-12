@@ -60,6 +60,22 @@ describe("GET /api/fact", () => {
     expect(response.status).toBe(409);
   });
 
+  it("returns a friendly 429, without calling OpenAI, once the user reaches the generation limit", async () => {
+    const user = await createUser("Inception");
+    // Ten facts in the last 5 minutes; the oldest leaves the 10-minute window in 5 minutes.
+    for (let i = 0; i < 10; i++) {
+      await createFact(user.id, `Other movie ${i}`, new Date(Date.now() - (i + 1) * 30_000));
+    }
+    signInAs(user.id);
+
+    const response = await GET();
+
+    expect(response.status).toBe(429);
+    expect(Number(response.headers.get("Retry-After"))).toBeGreaterThan(0);
+    expect(await response.json()).toEqual({ error: "You've asked for a lot of new facts. Please try again in 5 minutes." });
+    expect(generateMovieFact).not.toHaveBeenCalled();
+  });
+
   it("returns a friendly 503 when OpenAI fails and nothing is cached", async () => {
     const user = await createUser("Inception");
     signInAs(user.id);

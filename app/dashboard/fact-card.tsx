@@ -28,7 +28,11 @@ const SOURCE_NOTES: Record<FactResponse["source"], string> = {
   generated: "Freshly generated.",
   cache: "New facts are generated at most once a minute, so this is your latest one.",
   stale: "We couldn't generate a new fact right now, so here's your most recent one.",
+  limited: "You've had a lot of new facts in the last few minutes, so here's your latest one.",
 };
+
+// "42s", or "4m 12s" for the longer wait after the generation limit.
+const formatWait = (seconds: number) => (seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`);
 
 export function FactCard() {
   const [state, setState] = useState<FactState>({ status: "loading" });
@@ -115,7 +119,7 @@ export function FactCard() {
               : state.status === "error"
                 ? "Try again"
                 : waiting
-                  ? `New fact in ${secondsLeft}s`
+                  ? `New fact in ${formatWait(secondsLeft)}`
                   : "Get another fact"}
           </button>
           {state.status === "ready" && <p className="text-sm text-zinc-400">{SOURCE_NOTES[state.data.source]}</p>}

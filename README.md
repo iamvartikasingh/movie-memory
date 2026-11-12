@@ -32,7 +32,7 @@ cp .env.example .env    # then fill it in; see below
 | `AUTH_GOOGLE_ID`     | yes      | Google OAuth client ID                                                  |
 | `AUTH_GOOGLE_SECRET` | yes      | Google OAuth client secret                                              |
 | `OPENAI_API_KEY`     | yes      | OpenAI API key (server-side only)                                       |
-| `OPENAI_MODEL`       | no       | Defaults to `gpt-4o-mini`                                               |
+| `OPENAI_MODEL`       | no       | Defaults to `gpt-5.4-mini`                                              |
 | `TMDB_READ_ACCESS_TOKEN` | no   | TMDB token for the dashboard's movie art. Without it, posters come from Wikipedia and there's no wide still. |
 | `AUTH_TRUST_HOST`    | no       | Set to `true` only when running `npm start` (production mode) on localhost |
 | `TEST_DATABASE_URL`  | no       | Overrides the test database (default `…/movie_memory_test`)             |
@@ -128,6 +128,7 @@ GET /api/fact
             SET LOCAL lock_timeout = '12s'
             pg_advisory_xact_lock(hash("movie-fact:" + userId))   ← requests for one user queue here
             latest fact < 60s old?                    ── yes → return "cache"    (another request just made it)
+            ≥ 10 new facts for this user in 10 min?   ── yes → return "limited"  (or 429 if none for this movie)
             call OpenAI (10s timeout, no retries)
               ok     → INSERT fact, return "generated"
               failed → latest exists ? return "stale" : 503 friendly error
@@ -136,13 +137,15 @@ GET /api/fact
             fall back to the step-2 fact ("stale"), or return 503
 ```
 
-**The 60-second window** is `now - createdAt < 60_000`, so a fact exactly 60s old is stale. The clock is injected, which lets tests check the exact boundaries (59.999s, 60s, 61s) without sleeping. The response also carries `nextFactInSeconds`, so the "Get another fact" button counts down instead of looking broken inside the window; it's relative, so a wrong client clock can't skew it.
+**The 60-second window** is `now - createdAt < 60_000`, so a fact exactly 60s old is stale. The clock is injected, which lets tests check the exact boundaries (59.999s, 60s, 61s) without sleeping. The service also reports when the next new fact is allowed, which the response sends as `nextFactInSeconds`, so the "Get another fact" button counts down instead of looking broken; it's relative, so a wrong client clock can't skew it.
 
 **Burst protection** is a per-user, transaction-level Postgres advisory lock with a re-check under the lock. Five tabs opening at once all miss the cache and queue; the first generates and commits, and the other four find its fact. The tests assert exactly one OpenAI call, and fail with five if the lock is removed.
 
 - **`READ COMMITTED` is required:** each statement sees everything committed before it started, so the re-check sees the previous holder's insert. Under `REPEATABLE READ` the snapshot would predate it, and every queued request would generate again.
 - **Transaction-level, not session-level:** Prisma pools connections, so the lock must live on the transaction's single connection. It's released on commit, rollback or a dropped connection, so a crashed request can't leave it held.
 - **Bounded waiting:** `lock_timeout` (12s) stops requests piling up behind a hanging OpenAI call; a request that times out falls back to the last fact. The common case (a fresh fact exists) skips the lock entirely.
+
+**Generation limit:** changing movies starts a fresh window, so the cache alone doesn't bound OpenAI usage. Each user gets at most 10 new facts per 10 minutes across all movies, counted under the same lock so simultaneous requests can't all slip under it. Past the limit, the latest fact for the movie is served (`source: "limited"`), or a friendly 429 with `Retry-After` if there's none yet.
 
 **Failure handling:** an OpenAI timeout, error, empty response or missing key returns the most recent fact for this user and movie, whatever its age, marked `source: "stale"` so the UI can say so. With no fact at all, the route returns a friendly 503 and the card offers "Try again". Unexpected errors return a generic 500. Details are logged on the server, never sent to the client.
 
@@ -151,7 +154,7 @@ GET /api/fact
 - **Identity comes only from the session.** No route or action accepts a user or fact id, and every fact query filters by `userId`, so two users with the same movie never share a fact. Tests cover this for the service, the route and the failure fallback.
 - **Server actions re-check the session** (they're public endpoints) and validate with Zod: trim, collapse whitespace, 1 to 100 characters, no control characters. Onboarding's update is conditional (`WHERE favoriteMovie IS NULL`), so it stays first-time only even from a stale tab.
 - **Secrets stay on the server:** nothing is `NEXT_PUBLIC_`, modules that use API keys import `server-only`, and the session callback returns an allowlist (`id`, `name`, `email`, `image`).
-- **OpenAI output** is rendered as escaped text and capped at 150 tokens, and the prompt tells the model to treat the title as data.
+- **OpenAI output** is rendered as escaped text, the response is capped at 600 tokens (most of it the model's reasoning), and the prompt tells the model to treat the title as data.
 - **Missing Google data:** no name shows "Movie fan", a missing or broken photo shows an initial, and a missing email isn't shown.
 
 ### Beyond the spec
@@ -175,8 +178,8 @@ The interesting problems in this app are on the backend: a time-based cache, con
 - **App clock vs. database clock.** `createdAt` is written and compared with the app server's clock, which keeps the logic testable. With multiple instances this assumes NTP-synced clocks; a few seconds of skew only shifts the window edge.
 - **A stale fact beats an error.** On failure, the last fact is served whatever its age, and the UI labels it.
 - **No retries on OpenAI calls.** Retries would lengthen the time the lock is held. The fallback covers transient failures, and the next request simply tries again.
-- **`gpt-4o-mini` by default:** fast and cheap, but it sometimes invents details, especially for recent or obscure films. `OPENAI_MODEL` swaps in a stronger model without code changes.
-- **Changing the movie starts a fresh cache window**, since facts are keyed by movie. A user who keeps switching titles can trigger one generation per switch; the per-user cap below would close that.
+- **`gpt-5.4-mini` with low reasoning effort.** In a side-by-side test on six films, it was the only model tried that stated nothing false; `gpt-4o-mini`, `gpt-4.1-mini` and `gpt-4.1` each invented details (a wrong composer, a made-up premiere). Reasoning costs about 1–2s per fact and some extra tokens, and it counts toward the output cap, so the cap is 600 tokens rather than 150. Facts about very recent films are still limited by what the model knows.
+- **A per-user limit on top of the cache.** Facts are keyed by movie, so switching titles starts a fresh cache window; the 10-per-10-minutes limit bounds OpenAI usage either way. It costs one extra indexed query per generation, and only when a new fact is about to be generated.
 - **The fact loads on the client after the page renders**, so the dashboard never waits on OpenAI. The card has explicit loading, error and retry states.
 - **Database sessions rather than JWTs.** Sessions are revocable and the cookie holds only an opaque token, at the cost of one indexed query per authenticated request.
 - **Pinned to stable releases:** Prisma 6 (npm's `latest` points at a Prisma 8 release candidate) and Vitest 4.
@@ -184,11 +187,10 @@ The interesting problems in this app are on the backend: a time-based cache, con
 ## What I'd improve with 2 more hours
 
 1. **Ground facts in the film's Wikipedia summary.** Passing the article's intro to the model as context would make facts accurate rather than plausible.
-2. **A per-user generation cap** (for example 10 per 10 minutes, counted under the lock), closing the movie-switching loophole above.
-3. **Negative caching for OpenAI.** During an outage, each refresh still makes one attempt per user; remembering the last failure for about 30s would cut load and latency.
-4. **Lease-based generation.** A short-lived "claim" row instead of a long-held transaction, so the OpenAI call runs outside any transaction and waiters don't hold connections.
-5. **End-to-end tests and CI:** Playwright with a stubbed OAuth provider, plus a GitHub Actions workflow with a Postgres service container.
-6. **Refresh Google profile data on sign-in**; the adapter only copies name and photo when the account is created.
+2. **Negative caching for OpenAI.** During an outage, each refresh still makes one attempt per user; remembering the last failure for about 30s would cut load and latency.
+3. **Lease-based generation.** A short-lived "claim" row instead of a long-held transaction, so the OpenAI call runs outside any transaction and waiters don't hold connections.
+4. **End-to-end tests and CI:** Playwright with a stubbed OAuth provider, plus a GitHub Actions workflow with a Postgres service container.
+5. **Refresh Google profile data on sign-in**; the adapter only copies name and photo when the account is created.
 
 ---
 
